@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, time::Instant};
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 use crate::game::CtrlType;
 
@@ -31,31 +34,63 @@ pub struct Motd {
     pub text: String,
 }
 
+#[derive(Default)]
 pub struct Clock {
-    pub start_time: Instant,
-    pub running: Timer,
+    pub start_time: Timer,
+    pub server_list_ping: Timer,
+    pub lobby: Timer,
+    pub auto_start: Timer,
+    pub stage_load_timeout: Timer,
+    pub back_to_lobby_timer: Timer,
 }
 
 impl Clock {
-    pub fn now(&self) -> f32 {
-        self.start_time.elapsed().as_secs_f32()
+    pub fn now(&mut self) -> f32 {
+        self.start_time.now().as_secs_f32()
     }
 }
 
-impl Default for Clock {
-    fn default() -> Self {
-        Clock {
-            start_time: Instant::now(),
-            running: Timer::AutoStartTimer,
+pub struct Timer {
+    pub start: Instant,
+    pub running_time: Duration,
+    pub running: bool,
+}
+
+impl Timer {
+    pub fn now(&mut self) -> Duration {
+        if !self.running { return self.running_time; }
+        Instant::now().duration_since(self.start) +  self.running_time
+    }
+    pub fn start(&mut self) {
+        if !self.running {
+            self.start = Instant::now();
+            self.running = true;
         }
     }
+    pub fn stop(&mut self) {
+        if self.running {
+            self.running_time += Instant::now().duration_since(self.start);
+            self.running = false
+        }
+    }
+    pub fn reset(&mut self) {
+        self.start = Instant::now();
+        self.running_time = Duration::from_secs(0);
+        self.running = false;
+    }
+    pub fn timeout(&mut self, time: Duration) -> bool {
+        self.running && self.now() > time
+    }
 }
-pub enum Timer {
-    ServerPing,
-    Lobby,
-    StageLoadTimeout,
-    AutoStartTimer,
-    BackToLobby,
+
+impl Default for Timer {
+    fn default() -> Self {
+        Timer {
+            start: Instant::now(),
+            running_time: Duration::from_secs(0),
+            running: false,
+        }
+    }
 }
 
 pub struct Settings {
@@ -80,7 +115,7 @@ pub struct Client {
     pub connection: SocketAddr,
     pub is_loading: bool,
     pub wants_lobby: bool,
-    pub counter: usize
+    pub counter: usize,
 }
 
 #[derive(Clone)]

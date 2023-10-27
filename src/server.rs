@@ -1,6 +1,7 @@
 use std::net::{SocketAddr, UdpSocket};
-use std::vec;
+use std::time::Duration;
 use std::usize;
+use std::vec;
 
 use crate::data::{Clock, MatchConfig, Motd, ServerConfig, Stopwatch};
 use crate::game::{ChatMessageType, GameHeader, MessageTypes};
@@ -28,8 +29,6 @@ pub struct Server {
 
     buffer: Buffer,
     stream: Stream,
-
-    counter: usize
 }
 
 impl Server {
@@ -52,15 +51,28 @@ impl Server {
 
         //Return a small vector that send
         for client in self.clients.iter_mut() {
-            //client.counter += 1;
             self.buffer.seq(client.counter);
+            client.counter += 1;
             let message = self.buffer.message();
-            println!("Us: {:?}", message);
             self.listener.send_to(&message, client.connection).unwrap();
         }
     }
 
-    fn send_new(&mut self, header: Header) {}
+    fn send_new(&mut self, header: MessageTypes) {
+        let mut buffer = Buffer::default();
+
+        buffer.write_game_header(GameHeader::MatchMessage);
+        buffer.write_time(&mut self.clock);
+        buffer.write_json(header);
+        buffer.write_header(Header::UserReliableOrdered1);
+
+        for client in self.clients.iter_mut() {
+            buffer.seq(client.counter);
+            client.counter += 1;
+            let message = buffer.message();
+            self.listener.send_to(&message, client.connection).unwrap();
+        }
+    }
 
     ///Create a new message and send it to an address' chat
     fn chat_to(&mut self, message: &str, socket: SocketAddr) {
@@ -72,7 +84,7 @@ impl Server {
         };
 
         buffer.write_game_header(GameHeader::MatchMessage);
-        buffer.write_time(&self.clock);
+        buffer.write_time(&mut self.clock);
 
         buffer.write_json(email);
         buffer.write_header(Header::UserReliableOrdered1);
@@ -90,7 +102,7 @@ impl Server {
         };
 
         buffer.write_game_header(GameHeader::MatchMessage);
-        buffer.write_time(&self.clock);
+        buffer.write_time(&mut self.clock);
 
         buffer.write_json(email);
         buffer.write_header(Header::UserReliableOrdered1);
@@ -126,7 +138,9 @@ impl Server {
     }
 
     fn current_player(&mut self, guid: Vec<u8>, control: &i32) -> Option<usize> {
-        self.players.iter().position(|e| e.guid == guid && &e.ctrl_type == control)
+        self.players
+            .iter()
+            .position(|e| e.guid == guid && &e.ctrl_type == control)
     }
 
     fn verify_player(&mut self, _player: Player) -> bool {
@@ -152,12 +166,12 @@ impl Server {
             players: vec![],
             buffer: Buffer::default(),
             stream: Stream::default(),
-            counter: 0
         }
     }
 
     ///Update the Server's incoming requests
     pub fn update(&mut self) {
+        self.timers();
         let mut buffer = [0; 1500];
         let raw = self.listener.recv_from(&mut buffer);
 
@@ -168,23 +182,13 @@ impl Server {
             let header: Header = match self.stream.header {
                 Ok(header) => match header {
                     // ! This is not correct
-                    Header::Acknowledge => {
-                        let ack = self.stream.read_byte();
-                        let seq: u16 = self.stream.read_byte().into();
-                        let seq2: u16 = self.stream.read_byte().into();
-                        let seq: u16 = seq | (seq2 << 8);
-
-                        self.buffer.write_byte(ack);
-                        self.buffer.write_byte(ack); // ! This is not correct
-                        self.buffer.write_byte(ack);
-                        Header::Acknowledge
-                    }
+                    Header::Acknowledge => Header::Unconnected,
                     //* Correct as far as I can tell
                     Header::Ping => {
                         let ping_number = self.stream.read_byte();
 
                         self.buffer.write_byte(ping_number);
-                        self.buffer.write_time(&self.clock);
+                        self.buffer.write_time(&mut self.clock);
 
                         //Add the header
                         self.buffer.write_header(Header::Pong);
@@ -243,9 +247,7 @@ impl Server {
 
             match header {
                 Header::Unconnected => {}
-                Header::ConnectResponse => {
-                    self.send_to(header, addr)
-                }
+                Header::ConnectResponse => self.send_to(header, addr),
                 _ => self.send_all(header),
             }
         }
@@ -261,15 +263,17 @@ impl Server {
                 let json = self.stream.read_string();
 
                 self.buffer.write_game_header(GameHeader::MatchMessage);
-                self.buffer.write_time(&self.clock);
+                self.buffer.write_time(&mut self.clock);
                 self.buffer.write_string(&json);
-                
+
                 let json = oxidize(json);
                 self.update_server_state(&json);
 
                 match self.sending_client() {
-                    Some(index) => self.clients[index].counter = usize::from(self.stream.sequence) + 1,
-                    None => println!("Client is joining, sequence ignored")
+                    Some(index) => {
+                        self.clients[index].counter = usize::from(self.stream.sequence) + 1
+                    }
+                    None => println!("Client is joining, sequence ignored"),
                 }
 
                 Header::UserReliableOrdered1
@@ -280,14 +284,31 @@ impl Server {
 
                 self.buffer
                     .write_game_header(GameHeader::PlayerMovementMessage);
-                self.buffer.write_time(&self.clock);
+                self.buffer.write_time(&mut self.clock);
 
                 let data = self.stream.data.to_vec();
                 for byte in data[5..].iter() {
                     self.buffer.write_byte(*byte);
                 }
 
-                Header::UserUnreliable
+                //Add the header
+                self.buffer.write_header(Header::UserUnreliable);
+
+                //Return a small vector that send
+                let guid = match self.sending_client() {
+                    Some(index) => self.clients[index].guid.clone(),
+                    None => vec![],
+                };
+
+                for client in self.clients.iter_mut() {
+                    if client.guid == guid {
+                        continue;
+                    }
+                    let message = self.buffer.message();
+                    self.listener.send_to(&message, client.connection).unwrap();
+                }
+
+                Header::Unconnected
             }
         }
     }
@@ -302,6 +323,7 @@ impl Server {
                 ctrl_type,
                 ready,
             } => {
+                self.clock.lobby.start();
                 let vecter = guid_to_vec(client_guid);
                 match self.current_player(vecter, &ctrl_type) {
                     Some(index) => {
@@ -326,7 +348,7 @@ impl Server {
             }
             // TODO meme everyone into shrek
             MessageTypes::ChatMessage { from, r#type, text } => {}
-            MessageTypes::CheckPointPassedMessage {
+            MessageTypes::CheckpointPassedMessage {
                 client_guid,
                 ctrl_type,
                 lap_time,
@@ -353,7 +375,7 @@ impl Server {
                     connection: self.stream.origin,
                     is_loading: false,
                     wants_lobby: false,
-                    counter: 0
+                    counter: 0,
                 });
             }
             MessageTypes::ClientLeftMessage { client_guid } => {}
@@ -439,6 +461,21 @@ impl Server {
                     None => println!("What?"),
                 }
             }
+        }
+    }
+
+    fn timers(&mut self) {
+        if self.clock.lobby.timeout(Duration::from_secs(3)) {
+            self.clock.lobby.reset();
+            self.clock.stage_load_timeout.start();
+
+            self.send_new(MessageTypes::LoadRaceMessage {})
+        }
+
+        if self.clock.stage_load_timeout.timeout(Duration::from_secs(20)) {
+            self.clock.stage_load_timeout.reset();
+
+            self.send_new(MessageTypes::StartRaceMessage {  })
         }
     }
 }

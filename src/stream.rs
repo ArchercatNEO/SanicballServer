@@ -143,7 +143,7 @@ impl Stream {
                 connection: self.origin,
                 is_loading: false,
                 wants_lobby: false,
-                counter: 0
+                counter: 0,
             })
         }
 

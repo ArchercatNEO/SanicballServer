@@ -61,7 +61,7 @@ pub enum MessageTypes {
         text: String,
     },
     #[serde(rename_all = "PascalCase")]
-    CheckPointPassedMessage {
+    CheckpointPassedMessage {
         client_guid: String,
         ctrl_type: i32,
         lap_time: f32,
@@ -130,11 +130,11 @@ impl MessageTypes {
                 r#type: _,
                 text: _,
             } => "ChatMessage",
-            MessageTypes::CheckPointPassedMessage {
+            MessageTypes::CheckpointPassedMessage {
                 client_guid: _,
                 ctrl_type: _,
                 lap_time: _,
-            } => "CheckPointPassedMessage",
+            } => "CheckpointPassedMessage",
             MessageTypes::ClientJoinedMessage {
                 client_guid: _,
                 client_name: _,

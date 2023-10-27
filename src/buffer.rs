@@ -58,7 +58,7 @@ impl Buffer {
         }
     }
 
-    pub fn write_time(&mut self, clock: &Clock) {
+    pub fn write_time(&mut self, clock: &mut Clock) {
         self.write_f32(&clock.now());
     }
 
